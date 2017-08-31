@@ -16,7 +16,8 @@
 -export([
     normalize/1,
     match/2,
-    is_subset/2
+    is_subset/2,
+    subtract/2
 ]).
 
 
@@ -572,11 +573,208 @@ match({[_, _ | _] = _Props} = Sel, _Value, _Cmp) ->
 % We could get fancier here later with checking what kind of subset it is
 % e.g. if a selector is {age: {"$gte": 5}} and a query is
 % {age: {"$gte": 10}} we could say that is is a subset
+is_subset({[{<<"$and">>, Selector1}]}, {[{<<"$and">>, Selector2}]}) ->
+    is_subset({Selector1}, {Selector2});
 is_subset({[{<<"$and">>, Args}]}, Selector2) ->
     Pred = fun(Selector1) -> is_subset(Selector1, Selector2) end,
-    lists:all(Pred, Args);
+    lists:any(Pred, Args);
 is_subset(Selector1, {[{<<"$and">>, Args}]}) ->
     Pred = fun(Selector2) -> is_subset(Selector1, Selector2) end,
     lists:any(Pred, Args);
 is_subset({Selector1}, {Selector2}) ->    
-    sets:is_subset(sets:from_list(Selector1), sets:from_list(Selector2)).
+    ordsets:is_subset(ordsets:from_list(Selector1), ordsets:from_list(Selector2)).
+
+
+subtract({[{<<"$and">>, Args1}]} = Selector1, {[{<<"$and">>, Args2}]}) ->
+    %Check that the whole of Selector2 is is included
+    case subtract({Args2}, {Args1}) of
+        {[]} -> 
+            {SubtractedArgs} = subtract({Args1}, {Args2}),
+            {[{<<"$and">>, SubtractedArgs}]};
+        _ ->  
+            Selector1
+    end;
+subtract({[{<<"$and">>, Args}]}, Selector2) ->
+    Pred = fun(Arg) -> subtract(Arg, Selector2) =/= {[]} end,
+    {[{<<"$and">>, lists:filter(Pred, Args)}]};
+subtract({Selector1}, {Selector2}) ->
+    OrdsetSelector1 = ordsets:from_list(Selector1),
+    OrdsetSelector2 = ordsets:from_list(Selector2),
+    Subtracted = ordsets:subtract(OrdsetSelector1, OrdsetSelector2),
+    {ordsets:to_list(Subtracted)}.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+
+subset_both_equal_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual(true, is_subset(Selector1, Selector2)).
+
+
+subset_not_equal_value_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"BRA">>}]}}]},
+    ?assertEqual(false, is_subset(Selector1, Selector2)).
+
+
+subset_not_equal_operator_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual(false, is_subset(Selector1, Selector2)).
+
+
+subset_not_equal_field_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"name">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual(false, is_subset(Selector1, Selector2)).
+
+
+subset_and_selector1_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    ?assertEqual(true, is_subset(Selector1, Selector2)).
+
+
+subset_and_for_both_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    ?assertEqual(true, is_subset(Selector1, Selector2)).
+
+subset_and_for_both2_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    ?assertEqual(true, is_subset(Selector1, Selector2)).
+
+
+subset_and_not_subset_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    ?assertEqual(false, is_subset(Selector1, Selector2)).
+
+
+subtract_empty_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[]},
+    ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+subtract_both_equal_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual({[]}, subtract(Selector1, Selector2)).
+
+
+subtract_not_equal_value_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"BRA">>}]}}]},
+    ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+
+subtract_not_equal_operator_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+
+subtract_not_equal_field_test() ->
+    Selector1 = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
+    Selector2 = {[{<<"name">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+
+subtract_and_selector1_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+    Out = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]}
+                    ]
+                }]},
+    ?assertEqual(Out, subtract(Selector1, Selector2)).
+
+
+subtract_and_subset_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    Out = {[{<<"$and">>,
+                    [
+                        {[
+                            {<<"age">>,{[{<<"$lte">>,20}]}}
+                        ]}
+                    ]
+                }]},
+    ?assertEqual(Out, subtract(Selector1, Selector2)).
+
+
+subtract_and_not_subset_test() ->
+    Selector1 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    Selector2 = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}
+                    ]
+                }]},
+    ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+-endif.

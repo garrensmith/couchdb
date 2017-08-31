@@ -34,7 +34,14 @@
 create(Db, Indexes, Selector, Opts) ->
     FieldRanges = mango_idx_view:field_ranges(Selector),
     Composited = composite_indexes(Indexes, FieldRanges),
+    io:format("COMPOSITED ~p ~n ~p ~n", [Composited, FieldRanges]),
     {Index, IndexRanges} = choose_best_index(Db, Composited),
+    io:format("SELECTED INDEX ~p ~n ~p ~n", [Index, IndexRanges]),
+    {
+        Selector1, 
+        IndexRanges1
+    } = update_selector_and_range_for_index(Index, Selector),
+    io:format("Ranges OLD: ~p ~n New: ~p ~n", [IndexRanges, IndexRanges1]),
 
     Limit = couch_util:get_value(limit, Opts, mango_opts:default_limit()),
     Skip = couch_util:get_value(skip, Opts, 0),
@@ -44,8 +51,8 @@ create(Db, Indexes, Selector, Opts) ->
     {ok, #cursor{
         db = Db,
         index = Index,
-        ranges = IndexRanges,
-        selector = Selector,
+        ranges = IndexRanges1,
+        selector = Selector1,
         opts = Opts,
         limit = Limit,
         skip = Skip,
@@ -113,6 +120,17 @@ execute(#cursor{db = Db, index = Idx} = Cursor0, UserFun, UserAcc) ->
                     {error, Reason}
             end
     end.
+
+
+update_selector_and_range_for_index(Index, Selector0) ->
+    IndexSelector = case mango_idx:get_idx_selector(Index) of 
+        undefined -> {[]};
+        Selector -> Selector
+    end,
+    Selector1 = mango_selector:subtract(Selector0, IndexSelector),
+    IndexCols = mango_idx:columns(Index),
+    IndexRanges1 = composite_prefix(IndexCols, mango_idx_view:field_ranges(Selector1)),
+    {Selector1, IndexRanges1}.
 
 
 % Any of these indexes may be a composite index. For each
@@ -185,10 +203,10 @@ choose_best_index(_DbName, IndexRanges) ->
 
 
 maybe_sort_based_on_selector(IdxA, IdxB) ->
-    case [mango_idx:get_idx_selector(IdxA), mango_idx:get_idx_selector(IdxB)] of
-        [A, _] when A =/= undefined -> true;
-        [_, B] when B =/= undefined -> false;
-        [undefined, undefined] -> false
+    case {mango_idx:get_idx_selector(IdxA), mango_idx:get_idx_selector(IdxB)} of
+        {A, _} when A =/= undefined -> true;
+        {_, B} when B =/= undefined -> false;
+        {undefined, undefined} -> false
     end.
 
 
@@ -197,6 +215,7 @@ handle_message({meta, _}, Cursor) ->
 handle_message({row, Props}, Cursor) ->
     case doc_member(Cursor#cursor.db, Props, Cursor#cursor.opts) of
         {ok, Doc} ->
+            io:format("SELECTOR ~p ~n", [Cursor#cursor.selector]),
             case mango_selector:match(Cursor#cursor.selector, Doc) of
                 true ->
                     Cursor1 = update_bookmark_keys(Cursor, Props),
@@ -341,3 +360,47 @@ update_bookmark_keys(#cursor{limit = Limit} = Cursor, Props) when Limit > 0 ->
     };
 update_bookmark_keys(Cursor, _Props) ->
     Cursor.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+
+index(Sel) ->
+    {
+        idx,<<"mango_test_46418cd02081470d93290dc12306ebcb">>,
+           <<"_design/57e860dee471f40a2c74ea5b72997b81dda36a24">>,
+           <<"Selected">>,<<"json">>,
+           {[{<<"fields">>,{[{<<"location">>,<<"asc">>}]}},
+             {<<"selector">>,{Sel}}]},
+           [{<<"def">>,{[{<<"fields">>,[<<"location">>]}]}}]
+    }.
+
+update_selector_no_selector_test() ->
+    Index = index([]),
+    Selector = {[{<<"$and">>,
+              [{[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+               {[{<<"name">>,{[{<<"$eq">>,<<"Sandra">>}]}}]},
+               {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}]}]},
+    IndexRange = [{'$gte',<<"FRA">>,'$lt',mango_json_max}],
+    {Selector1, IndexRange1 } = update_selector_and_range_for_index(Index, Selector),
+    ?assertEqual(Selector, Selector1),
+    ?assertEqual(IndexRange, IndexRange1).
+
+
+update_selector_with_selector_test() ->
+    Index = index([{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]),
+    Selector = {[{<<"$and">>,
+              [{[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+               {[{<<"name">>,{[{<<"$eq">>,<<"Sandra">>}]}}]},
+               {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]}]}]},
+    Selector2 = {[{<<"$and">>,
+              [{[{<<"user_id">>,{[{<<"$gte">>,7}]}}]},
+               {[{<<"name">>,{[{<<"$eq">>,<<"Sandra">>}]}}]}
+               ]}]},
+    IndexRange = [],
+    {Selector1, IndexRange1 } = update_selector_and_range_for_index(Index, Selector),
+    ?assertEqual(Selector2, Selector1),
+    ?assertEqual(IndexRange, IndexRange1).
+
+
+-endif.

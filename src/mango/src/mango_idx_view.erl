@@ -112,13 +112,28 @@ columns(Idx) ->
     {<<"fields">>, {Fields}} = lists:keyfind(<<"fields">>, 1, Props),
     [Key || {Key, _} <- Fields].
 
-
 is_usable(Idx, Selector) ->
-    % This index is usable if at least the first column is
+    is_usable(Idx, Selector, is_text_search(Selector)).
+
+is_usable(_Idx, _Selector, true) ->
+    false;
+is_usable(Idx, {SelectorList} = Selector, false) ->
+    % The index is usable if 
+    % the index Selector is exactly equal to the selector of the query
+    % or at least the first column is
     % a member of the indexable fields of the selector.
-    Columns = columns(Idx),
-    Fields = indexable_fields(Selector),
-    lists:member(hd(Columns), Fields) andalso not is_text_search(Selector).
+    IdxSelector = case mango_idx:get_idx_selector(Idx) of
+        undefined -> [];
+        {IdxSel} -> IdxSel
+    end,
+    case sets:from_list(IdxSelector) == sets:from_list(SelectorList) of
+        true  ->
+            true;
+        false ->
+            Columns = columns(Idx),
+            Fields = indexable_fields(Selector),
+            lists:member(hd(Columns), Fields) 
+    end.
 
 
 is_text_search({[]}) ->

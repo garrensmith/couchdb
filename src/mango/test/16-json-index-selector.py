@@ -89,6 +89,8 @@ class IndexSelectorJson(mango.DbPerClass):
         self.db.create_index(["location"], selector=selector, name="Selected")
         resp = self.db.find(selector, explain=True)
         self.assertEqual(resp["index"]["name"], "Selected")
+        docs = self.db.find(selector, sort=[{"location": "desc"}])
+        self.assertEqual(len(docs), 3)
 
     def test_uses_partial_index_for_query_multiple_fields(self):
         selector = {"location": {"$gte": "FRA"}}
@@ -103,9 +105,9 @@ class IndexSelectorJson(mango.DbPerClass):
         self.assertEqual(resp["index"]["name"], "Selected")
 
     def test_uses_partial_index_for_query_selector_multiple_fields_diff_order(self):
-        selector = {"location": {"$gte": "FRA"}, "user_id": 7}
-        self.db.create_index(["location"], selector=selector, name="Selected")
-        resp = self.db.find({"user_id": 7, "location": {"$gte": "FRA"}}, explain=True)
+        selector = {"location": {"$gte": "FRA"}, "user_id": {"$gte": 7}}
+        self.db.create_index(["location"], name="Selected")
+        resp = self.db.find({"user_id": {"$gte": 7}, "name": "Sandra", "location": {"$gte": "FRA"}}, explain=True)
         self.assertEqual(resp["index"]["name"], "Selected")
 
     def test_does_not_use_partial_index_for_or_query(self):
@@ -158,10 +160,18 @@ class IndexSelectorJson(mango.DbPerClass):
         resp = self.db.find({"location": {"$gte": "ZAR"}}, explain=True)
         self.assertEqual(resp["index"]["name"], "Selected")
 
-    @unittest.skip("remove partial index selector from find selector before determining startkey/endkey params")
     def test_uses_partial_index_for_ne(self):
         self.db.create_index(["location"], selector={"location": {"$ne": "ZAR"}},
                              name="Selected")
+        resp1 = self.db.find({"location": {"$ne": "ZAR"}})
+        resp = self.db.find({"location": {"$ne": "ZAR"}}, explain=True)
+        self.assertEqual(resp["index"]["name"], "Selected")
+
+    def test_uses_partial_index_for_ne_over_other_one(self):
+        self.db.create_index(["location"], selector={"location": {"$ne": "ZAR"}},
+                             name="Selected")
+        self.db.create_index(["location"], name="NotSelected")
+        resp1 = self.db.find({"location": {"$ne": "ZAR"}})
         resp = self.db.find({"location": {"$ne": "ZAR"}}, explain=True)
         self.assertEqual(resp["index"]["name"], "Selected")
 
