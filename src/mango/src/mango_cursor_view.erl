@@ -34,14 +34,11 @@
 create(Db, Indexes, Selector, Opts) ->
     FieldRanges = mango_idx_view:field_ranges(Selector),
     Composited = composite_indexes(Indexes, FieldRanges),
-    io:format("COMPOSITED ~p ~n ~p ~n", [Composited, FieldRanges]),
     {Index, IndexRanges} = choose_best_index(Db, Composited),
-    io:format("SELECTED INDEX ~p ~n ~p ~n", [Index, IndexRanges]),
     {
         Selector1, 
         IndexRanges1
     } = update_selector_and_range_for_index(Index, Selector),
-    io:format("Ranges OLD: ~p ~n New: ~p ~n", [IndexRanges, IndexRanges1]),
 
     Limit = couch_util:get_value(limit, Opts, mango_opts:default_limit()),
     Skip = couch_util:get_value(skip, Opts, 0),
@@ -204,9 +201,19 @@ choose_best_index(_DbName, IndexRanges) ->
 
 maybe_sort_based_on_selector(IdxA, IdxB) ->
     case {mango_idx:get_idx_selector(IdxA), mango_idx:get_idx_selector(IdxB)} of
-        {A, _} when A =/= undefined -> true;
-        {_, B} when B =/= undefined -> false;
-        {undefined, undefined} -> false
+        {A, B} when A =/= undefined, B =/= undefined ->
+            LenA = mango_selector:num_operators(A), 
+            LenB = mango_selector:num_operators(B), 
+            case LenA - LenB  of
+                N when N >= 0 -> true; 
+                _ -> false
+            end;
+        {A, _} when A =/= undefined -> 
+            true;
+        {_, B} when B =/= undefined -> 
+            false;
+        {undefined, undefined} -> 
+            false
     end.
 
 
@@ -215,7 +222,6 @@ handle_message({meta, _}, Cursor) ->
 handle_message({row, Props}, Cursor) ->
     case doc_member(Cursor#cursor.db, Props, Cursor#cursor.opts) of
         {ok, Doc} ->
-            io:format("SELECTOR ~p ~n", [Cursor#cursor.selector]),
             case mango_selector:match(Cursor#cursor.selector, Doc) of
                 true ->
                     Cursor1 = update_bookmark_keys(Cursor, Props),

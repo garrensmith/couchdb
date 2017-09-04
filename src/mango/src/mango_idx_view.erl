@@ -126,18 +126,14 @@ is_usable(Idx, Selector, false) ->
         undefined -> {[]};
         IdxSel -> IdxSel
     end,
-    io:format("SEE ~p ~n ~p ~n", [IdxSelector, Selector]),
     case mango_selector:is_subset(IdxSelector, Selector) of
         true when IdxSelector =:= {[]}  ->
-            io:format("NO SUBSET ~n"),
             Columns = columns(Idx),
             Fields = indexable_fields(Selector),
             lists:member(hd(Columns), Fields); 
         true ->
-            io:format("YEE subset ~n"),
             true;
         false ->
-            io:format("JUNK ~n"),
             false
     end.
 
@@ -515,3 +511,39 @@ range_pos(Low, Arg, High) ->
                     max
             end
     end.
+
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+index(Sel) ->
+    {
+        idx,<<"mango_test_46418cd02081470d93290dc12306ebcb">>,
+           <<"_design/57e860dee471f40a2c74ea5b72997b81dda36a24">>,
+           <<"Selected">>,<<"json">>,
+           {[{<<"fields">>,{[{<<"location">>,<<"asc">>}]}},
+             {<<"selector">>,{Sel}}]},
+           [{<<"def">>,{[{<<"fields">>,[<<"location">>]}]}}]
+    }.
+
+is_usable_for_no_selector_test() ->
+    Index = index([]),
+    Selector = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
+    ?assert(is_usable(Index, Selector, false)).
+
+is_usable_for_matching_selector_test() ->
+    Selector = [{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}],
+    Index = index(Selector),
+    ?assert(is_usable(Index, {Selector}, false)).
+
+is_not_usable_for_non_matching_selector_test() ->
+    IdxSelector = [{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}],
+    Selector = {[{<<"location">>,{[{<<"$eq">>,<<"FRA">>}]}}]},
+    Index = index(IdxSelector),
+    ?assertEqual(false, is_usable(Index, Selector, false)).
+
+is_not_usable_non_matching_fields_test() ->
+    Index = index([]),
+    Selector = {[{<<"name">>,{[{<<"$eq">>,<<"Sheila">>}]}}]},
+    ?assertEqual(false, is_usable(Index, Selector, false)).
+
+-endif.

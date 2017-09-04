@@ -17,7 +17,8 @@
     normalize/1,
     match/2,
     is_subset/2,
-    subtract/2
+    subtract/2,
+    num_operators/1
 ]).
 
 
@@ -604,6 +605,14 @@ subtract({Selector1}, {Selector2}) ->
     {ordsets:to_list(Subtracted)}.
 
 
+num_operators({[{<<"$or">>, Selector}]}) ->
+    num_operators({Selector});
+num_operators({[{<<"$and">>, Selector}]}) ->
+    num_operators({Selector});
+num_operators({Selector}) ->
+    length(Selector).
+
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 
@@ -776,5 +785,32 @@ subtract_and_not_subset_test() ->
                     ]
                 }]},
     ?assertEqual(Selector1, subtract(Selector1, Selector2)).
+
+
+num_operators_and_test() ->
+    Selector = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    ?assertEqual(3, num_operators(Selector)).
+
+
+num_operators_plain_test() ->
+    Selector = {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+    ?assertEqual(1, num_operators(Selector)).
+
+
+num_operators_or_test() ->
+    Selector = {[{<<"$or">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    ?assertEqual(3, num_operators(Selector)).
 
 -endif.
