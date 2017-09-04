@@ -605,9 +605,7 @@ subtract({Selector1}, {Selector2}) ->
     {ordsets:to_list(Subtracted)}.
 
 
-num_operators({[{<<"$or">>, Selector}]}) ->
-    num_operators({Selector});
-num_operators({[{<<"$and">>, Selector}]}) ->
+num_operators({[{<<"$", _/binary>>, Selector}]}) ->
     num_operators({Selector});
 num_operators({Selector}) ->
     length(Selector).

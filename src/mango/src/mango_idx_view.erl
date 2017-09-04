@@ -132,7 +132,9 @@ is_usable(Idx, Selector, false) ->
             Fields = indexable_fields(Selector),
             lists:member(hd(Columns), Fields); 
         true ->
-            true;
+            Columns = columns(Idx),
+            Fields = all_fields(Selector),
+            lists:member(hd(Columns), Fields); 
         false ->
             false
     end.
@@ -246,6 +248,11 @@ validate_ddoc(VProps) ->
         invalid_view
     end.
 
+% all_fields({[{<<"$and">>, Args}]}) ->
+all_fields({[{<<"$", _/binary>>, Args}]}) ->
+    lists:usort(lists:flatten([all_fields(A) || A <- Args]));
+all_fields({[{Field, _Cond}]}) ->
+    [Field].
 
 % This function returns a list of indexes that
 % can be used to restrict this query. This works by
@@ -525,15 +532,18 @@ index(Sel) ->
            [{<<"def">>,{[{<<"fields">>,[<<"location">>]}]}}]
     }.
 
+
 is_usable_for_no_selector_test() ->
     Index = index([]),
     Selector = {[{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}]},
     ?assert(is_usable(Index, Selector, false)).
 
+
 is_usable_for_matching_selector_test() ->
     Selector = [{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}],
     Index = index(Selector),
     ?assert(is_usable(Index, {Selector}, false)).
+
 
 is_not_usable_for_non_matching_selector_test() ->
     IdxSelector = [{<<"location">>,{[{<<"$gt">>,<<"FRA">>}]}}],
@@ -541,9 +551,38 @@ is_not_usable_for_non_matching_selector_test() ->
     Index = index(IdxSelector),
     ?assertEqual(false, is_usable(Index, Selector, false)).
 
+
 is_not_usable_non_matching_fields_test() ->
     Index = index([]),
     Selector = {[{<<"name">>,{[{<<"$eq">>,<<"Sheila">>}]}}]},
     ?assertEqual(false, is_usable(Index, Selector, false)).
+
+
+all_fields_returns_all_test() ->
+    Selector = {[{<<"name">>,{[{<<"$eq">>,<<"Sheila">>}]}}]},
+    ?assertEqual([<<"name">>], all_fields(Selector)).
+
+
+all_fields_returns_all_with_and_test() ->
+    Selector = {[{<<"$and">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$gte">>,<<"FRA">>}]}}]},
+                        {[{<<"location">>,{[{<<"$lte">>,<<"ZAR">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    ?assertEqual([<<"age">>, <<"location">>, <<"user_id">>], all_fields(Selector)).
+
+
+all_fields_returns_all_with_or_test() ->
+    Selector = {[{<<"$or">>,
+                    [
+                        {[{<<"user_id">>,{[{<<"$lt">>,8}]}}]},
+                        {[{<<"location">>,{[{<<"$lte">>,<<"ZAR">>}]}}]},
+                        {[{<<"age">>,{[{<<"$lte">>,20}]}}]}
+                    ]
+                }]},
+    ?assertEqual([<<"age">>, <<"location">>, <<"user_id">>], all_fields(Selector)).
 
 -endif.

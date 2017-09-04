@@ -214,3 +214,9 @@ class IndexSelectorJson(mango.DbPerClass):
         self.db.create_index(["location"], name="Global")
         resp = self.db.find(selector, explain=True)
         self.assertEqual(resp["index"]["name"], "Global")
+    
+    def test_does_not_use_partial_index_if_fields_dont_match(self):
+        selector = {"location": {"$exists": True}}
+        self.db.create_index(["name"], selector=selector, name="Selected")
+        resp = self.db.find({"location": {"$exists": True}, "age": 8}, explain=True)
+        self.assertEqual(resp["index"]["name"], "_all_docs")
