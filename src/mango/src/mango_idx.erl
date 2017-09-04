@@ -75,10 +75,10 @@ get_usable_indexes(Db, Selector0, Opts) ->
         ?MANGO_ERROR({no_usable_index, missing_sort_index})
     end,
 
-    SelectorIndexes = maybe_filter_selector(SortIndexes, Selector, Opts),
+    % SelectorIndexes = maybe_filter_selector(SortIndexes, Selector, Opts),
 
     UsableFilter = fun(I) -> mango_idx:is_usable(I, Selector) end,
-    lists:filter(UsableFilter, SelectorIndexes).
+    lists:filter(UsableFilter, SortIndexes).
 
 recover(Db) ->
     {ok, DDocs0} = mango_util:open_ddocs(Db),

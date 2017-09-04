@@ -180,7 +180,6 @@ class Database(object):
         else:
             path = self.path("_find")
         r = self.sess.post(path, data=body)
-        print r.json()
         r.raise_for_status()
         if explain or return_raw:
             return r.json()

@@ -577,7 +577,7 @@ is_subset({[{<<"$and">>, Selector1}]}, {[{<<"$and">>, Selector2}]}) ->
     is_subset({Selector1}, {Selector2});
 is_subset({[{<<"$and">>, Args}]}, Selector2) ->
     Pred = fun(Selector1) -> is_subset(Selector1, Selector2) end,
-    lists:any(Pred, Args);
+    lists:all(Pred, Args);
 is_subset(Selector1, {[{<<"$and">>, Args}]}) ->
     Pred = fun(Selector2) -> is_subset(Selector1, Selector2) end,
     lists:any(Pred, Args);

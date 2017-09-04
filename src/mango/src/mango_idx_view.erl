@@ -117,22 +117,28 @@ is_usable(Idx, Selector) ->
 
 is_usable(_Idx, _Selector, true) ->
     false;
-is_usable(Idx, {SelectorList} = Selector, false) ->
+is_usable(Idx, Selector, false) ->
     % The index is usable if 
-    % the index Selector is exactly equal to the selector of the query
+    % the index Selector is a subset of the find Selector
     % or at least the first column is
     % a member of the indexable fields of the selector.
     IdxSelector = case mango_idx:get_idx_selector(Idx) of
-        undefined -> [];
-        {IdxSel} -> IdxSel
+        undefined -> {[]};
+        IdxSel -> IdxSel
     end,
-    case sets:from_list(IdxSelector) == sets:from_list(SelectorList) of
-        true  ->
-            true;
-        false ->
+    io:format("SEE ~p ~n ~p ~n", [IdxSelector, Selector]),
+    case mango_selector:is_subset(IdxSelector, Selector) of
+        true when IdxSelector =:= {[]}  ->
+            io:format("NO SUBSET ~n"),
             Columns = columns(Idx),
             Fields = indexable_fields(Selector),
-            lists:member(hd(Columns), Fields) 
+            lists:member(hd(Columns), Fields); 
+        true ->
+            io:format("YEE subset ~n"),
+            true;
+        false ->
+            io:format("JUNK ~n"),
+            false
     end.
 
 
