@@ -250,7 +250,14 @@ view_cb({row, Row}, #mrargs{extra = Options} = Acc) ->
     {ok, Acc};
 view_cb(complete, Acc) ->
     % Send shard-level execution stats
-    ok = rexi:stream2({execution_stats, {docs_examined, get(mango_docs_examined)}}),
+    % ok = rexi:stream2({execution_stats, {docs_examined, get(mango_docs_examined)}}),
+    ViewRow =  #view_row{
+        key = execution_stats,
+        id = execution_stats,
+        value = get(mango_docs_examined),
+        doc = execution_stats
+    },
+    ok = rexi:stream2(ViewRow),
     % Finish view output
     ok = rexi:stream_last(complete),
     {ok, Acc};
@@ -431,6 +438,10 @@ doc_member(Cursor, RowProps) ->
                 Else ->
                     Else
             end;
+        execution_stats ->
+            DocsExamined = couch_util:get_value(value, RowProps),
+            ExecutionStats1 = mango_execution_stats:incr_docs_examined(ExecutionStats, DocsExamined),
+            {no_match, null, {execution_stats, ExecutionStats1}};
         _ ->
             % no doc, no match
             {no_match, null, {execution_stats, ExecutionStats}}
