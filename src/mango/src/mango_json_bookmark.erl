@@ -26,7 +26,7 @@
 update_args(EncodedBookmark,  #mrargs{skip = Skip} = Args) ->
     Bookmark = unpack(EncodedBookmark),
     case is_list(Bookmark) of
-        true -> 
+        true ->
             {startkey, Startkey} = lists:keyfind(startkey, 1, Bookmark),
             {startkey_docid, StartkeyDocId} = lists:keyfind(startkey_docid, 1, Bookmark),
             Args#mrargs{
@@ -37,7 +37,7 @@ update_args(EncodedBookmark,  #mrargs{skip = Skip} = Args) ->
         false ->
             Args
     end.
-    
+
 
 create(#cursor{bookmark_docid = BookmarkDocId, bookmark_key = BookmarkKey}) when BookmarkKey =/= undefined ->
     QueryArgs = [

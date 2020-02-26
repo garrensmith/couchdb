@@ -19,7 +19,6 @@
 ]).
 
 -export([
-    view_cb/2,
     handle_message/2,
     handle_all_docs_message/2,
     composite_indexes/2,
@@ -44,7 +43,7 @@ create(Db, Indexes, Selector, Opts) ->
     Limit = couch_util:get_value(limit, Opts, mango_opts:default_limit()),
     Skip = couch_util:get_value(skip, Opts, 0),
     Fields = couch_util:get_value(fields, Opts, all_fields),
-    Bookmark = couch_util:get_value(bookmark, Opts), 
+    Bookmark = couch_util:get_value(bookmark, Opts),
 
     {ok, #cursor{
         db = Db,
@@ -92,7 +91,7 @@ maybe_replace_max_json(?MAX_STR) ->
 
 maybe_replace_max_json([H | T] = EndKey) when is_list(EndKey) ->
     H1 = if H == ?MAX_JSON_OBJ -> <<"<MAX>">>;
-            true -> H
+        true -> H
     end,
     [H1 | maybe_replace_max_json(T)];
 
@@ -106,7 +105,7 @@ base_args(#cursor{index = Idx, selector = Selector} = Cursor) ->
         start_key = mango_idx:start_key(Idx, Cursor#cursor.ranges),
         end_key = mango_idx:end_key(Idx, Cursor#cursor.ranges),
         include_docs = true,
-        extra = [{callback, {?MODULE, view_cb}}, {selector, Selector}]
+        update = false % mango index should already be up to date
     }.
 
 
@@ -124,19 +123,19 @@ execute(#cursor{db = Db, index = Idx, execution_stats = Stats} = Cursor0, UserFu
             BaseArgs = base_args(Cursor),
             #cursor{opts = Opts, bookmark = Bookmark} = Cursor,
             Args0 = apply_opts(Opts, BaseArgs),
-            Args = mango_json_bookmark:update_args(Bookmark, Args0), 
-            UserCtx = couch_util:get_value(user_ctx, Opts, #user_ctx{}),
-            DbOpts = [{user_ctx, UserCtx}],
+            Args = mango_json_bookmark:update_args(Bookmark, Args0),
             Result = case mango_idx:def(Idx) of
                 all_docs ->
                     CB = fun ?MODULE:handle_all_docs_message/2,
-                    fabric:all_docs(Db, DbOpts, CB, Cursor, Args);
+                    AllDocOpts = fabric2_util:all_docs_view_opts(Args),
+                    fabric2_db:fold_docs(Db, CB, Cursor, AllDocOpts);
                 _ ->
                     CB = fun ?MODULE:handle_message/2,
                     % Normal view
-                    DDoc = ddocid(Idx),
+                    DDocId = mango_idx:ddoc_id(Idx),
+                    {ok, DDoc} = fabric2_db:open_doc(Db, DDocId),
                     Name = mango_idx:name(Idx),
-                    fabric:query_view(Db, DbOpts, DDoc, Name, CB, Cursor, Args)
+                    couch_views:query(Db, DDoc, Name, CB, Cursor, Args)
             end,
             case Result of
                 {ok, LastCursor} ->
@@ -217,75 +216,11 @@ choose_best_index(_DbName, IndexRanges) ->
     {SelectedIndex, SelectedIndexRanges}.
 
 
-view_cb({meta, Meta}, Acc) ->
-    % Map function starting
-    put(mango_docs_examined, 0),
-    set_mango_msg_timestamp(),
-    ok = rexi:stream2({meta, Meta}),
-    {ok, Acc};
-view_cb({row, Row}, #mrargs{extra = Options} = Acc) ->
-    ViewRow =  #view_row{
-        id = couch_util:get_value(id, Row),
-        key = couch_util:get_value(key, Row),
-        doc = couch_util:get_value(doc, Row)
-    },
-    case ViewRow#view_row.doc of
-        null ->
-            put(mango_docs_examined, get(mango_docs_examined) + 1),
-            maybe_send_mango_ping();
-        undefined ->
-            ViewRow2 = ViewRow#view_row{
-                value = couch_util:get_value(value, Row)
-            },
-            ok = rexi:stream2(ViewRow2),
-            put(mango_docs_examined, 0),
-            set_mango_msg_timestamp();
-        Doc ->
-            Selector = couch_util:get_value(selector, Options),
-            case mango_selector:match(Selector, Doc) of
-                true ->
-                    ViewRow2 = ViewRow#view_row{
-                        value = get(mango_docs_examined) + 1
-                    },
-                    ok = rexi:stream2(ViewRow2),
-                    put(mango_docs_examined, 0),
-                    set_mango_msg_timestamp();
-                false ->
-                    put(mango_docs_examined, get(mango_docs_examined) + 1),
-                    maybe_send_mango_ping()
-            end
-        end,
-    {ok, Acc};
-view_cb(complete, Acc) ->
-    % Finish view output
-    ok = rexi:stream_last(complete),
-    {ok, Acc};
-view_cb(ok, ddoc_updated) ->
-    rexi:reply({ok, ddoc_updated}).
-
-
-maybe_send_mango_ping() ->
-    Current = os:timestamp(),
-    LastPing = get(mango_last_msg_timestamp),
-    % Fabric will timeout if it has not heard a response from a worker node
-    % after 5 seconds. Send a ping every 4 seconds so the timeout doesn't happen.
-    case timer:now_diff(Current, LastPing) > ?HEARTBEAT_INTERVAL_IN_USEC of
-        false ->
-            ok;
-        true ->
-            rexi:ping(),
-            set_mango_msg_timestamp()
-    end.
-
-
-set_mango_msg_timestamp() ->
-    put(mango_last_msg_timestamp, os:timestamp()).
-
-
 handle_message({meta, _}, Cursor) ->
     {ok, Cursor};
 handle_message({row, Props}, Cursor) ->
-    case doc_member(Cursor, Props) of
+    io:format("DOC ~p ~n", [Props]),
+    case match_doc(Cursor, Props) of
         {ok, Doc, {execution_stats, ExecutionStats1}} ->
             Cursor1 = Cursor#cursor {
                 execution_stats = ExecutionStats1
@@ -309,6 +244,7 @@ handle_message({error, Reason}, _Cursor) ->
 
 
 handle_all_docs_message({row, Props}, Cursor) ->
+    io:format("All Docs ~p ~n", [Props]),
     case is_design_doc(Props) of
         true -> {ok, Cursor};
         false -> handle_message({row, Props}, Cursor)
@@ -332,29 +268,8 @@ handle_doc(C, _Doc) ->
     {stop, C}.
 
 
-ddocid(Idx) ->
-    case mango_idx:ddoc(Idx) of
-        <<"_design/", Rest/binary>> ->
-            Rest;
-        Else ->
-            Else
-    end.
-
-
 apply_opts([], Args) ->
     Args;
-apply_opts([{r, RStr} | Rest], Args) ->
-    IncludeDocs = case list_to_integer(RStr) of
-        1 ->
-            true;
-        R when R > 1 ->
-            % We don't load the doc in the view query because
-            % we have to do a quorum read in the coordinator
-            % so there's no point.
-            false
-    end,
-    NewArgs = Args#mrargs{include_docs = IncludeDocs},
-    apply_opts(Rest, NewArgs);
 apply_opts([{conflicts, true} | Rest], Args) ->
     NewArgs = Args#mrargs{conflicts = true},
     apply_opts(Rest, NewArgs);
@@ -409,41 +324,10 @@ apply_opts([{_, _} | Rest], Args) ->
     apply_opts(Rest, Args).
 
 
-doc_member(Cursor, RowProps) ->
-    Db = Cursor#cursor.db, 
-    Opts = Cursor#cursor.opts,
+match_doc(Cursor, RowProps) ->
     ExecutionStats = Cursor#cursor.execution_stats,
     Selector = Cursor#cursor.selector,
-    {Matched, Incr} = case couch_util:get_value(value, RowProps) of
-        N when is_integer(N) -> {true, N};
-        _ -> {false, 1}
-    end,
-    case couch_util:get_value(doc, RowProps) of
-        {DocProps} ->
-            ExecutionStats1 = mango_execution_stats:incr_docs_examined(ExecutionStats, Incr),
-            case Matched of
-                true ->
-                    {ok, {DocProps}, {execution_stats, ExecutionStats1}};
-                false ->
-                    match_doc(Selector, {DocProps}, ExecutionStats1)
-                end;
-        undefined ->
-            ExecutionStats1 = mango_execution_stats:incr_quorum_docs_examined(ExecutionStats),
-            Id = couch_util:get_value(id, RowProps),
-            case mango_util:defer(fabric, open_doc, [Db, Id, Opts]) of
-                {ok, #doc{}=DocProps} ->
-                    Doc = couch_doc:to_json_obj(DocProps, []),
-                    match_doc(Selector, Doc, ExecutionStats1);
-                Else ->
-                    Else
-            end;
-        null ->
-            ExecutionStats1 = mango_execution_stats:incr_docs_examined(ExecutionStats),
-            {no_match, null, {execution_stats, ExecutionStats1}}
-    end.
-
-
-match_doc(Selector, Doc, ExecutionStats) ->
+    Doc = couch_util:get_value(doc, RowProps),
     case mango_selector:match(Selector, Doc) of
         true ->
             {ok, Doc, {execution_stats, ExecutionStats}};
@@ -460,8 +344,8 @@ is_design_doc(RowProps) ->
 
 
 update_bookmark_keys(#cursor{limit = Limit} = Cursor, Props) when Limit > 0 ->
-    Id = couch_util:get_value(id, Props), 
-    Key = couch_util:get_value(key, Props), 
+    Id = couch_util:get_value(id, Props),
+    Key = couch_util:get_value(key, Props),
     Cursor#cursor {
         bookmark_docid = Id,
         bookmark_key = Key
@@ -493,7 +377,7 @@ runs_match_on_doc_with_no_value_test() ->
             ]
         }}
     ],
-    {Match, _, _} = doc_member(Cursor, RowProps),
+    {Match, _, _} = match_doc(Cursor, RowProps),
     ?assertEqual(Match, no_match).
 
 does_not_run_match_on_doc_with_value_test() ->
@@ -515,7 +399,7 @@ does_not_run_match_on_doc_with_value_test() ->
             ]
         }}
     ],
-    {Match, _, _} = doc_member(Cursor, RowProps),
+    {Match, _, _} = match_doc(Cursor, RowProps),
     ?assertEqual(Match, ok).
 
 

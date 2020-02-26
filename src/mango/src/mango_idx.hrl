@@ -13,9 +13,11 @@
 -record(idx, {
     dbname,
     ddoc,
+    ddoc_id,
     name,
     type,
     def,
     partitioned,
-    opts
+    opts,
+    build_status
 }).

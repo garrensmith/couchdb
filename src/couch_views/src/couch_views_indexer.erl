@@ -18,7 +18,8 @@
 
 
 -export([
-    init/0
+    init/0,
+    fetch_docs/2
 ]).
 
 -include("couch_views.hrl").
@@ -35,14 +36,15 @@ spawn_link() ->
 
 
 init() ->
-    {ok, Job, Data0} = couch_jobs:accept(?INDEX_JOB_TYPE, #{}),
-    Data = upgrade_data(Data0),
+    {ok, Job, Data} = couch_jobs:accept(?INDEX_JOB_TYPE, #{}),
     #{
         <<"db_name">> := DbName,
         <<"ddoc_id">> := DDocId,
         <<"sig">> := JobSig,
-        <<"retries">> := Retries
+        <<"retries">> := Retries,
+        <<"build_to_vs">> := BuildToVS
     } = Data,
+    io:format("BUILDING ~p ~n", [Data]),
 
     {ok, Db} = try
         fabric2_db:open(DbName, [?ADMIN_CTX])
@@ -81,6 +83,8 @@ init() ->
         db_seq => undefined,
         view_seq => undefined,
         last_seq => undefined,
+        view_vs => undefined,
+        build_to_vs => BuildToVS,
         job => Job,
         job_data => Data,
         count => 0,
@@ -95,6 +99,7 @@ init() ->
         exit:normal ->
             ok;
         Error:Reason  ->
+            io:format("ERROR ~p ~p ~p ~n", [Error, Reason, erlang:display(erlang:get_stacktrace())]),
             NewRetry = Retries + 1,
             RetryLimit = retry_limit(),
 
@@ -112,13 +117,6 @@ init() ->
                     couch_jobs:finish(undefined, Job, NewData),
                     exit(normal)
             end
-    end.
-
-
-upgrade_data(Data) ->
-    case maps:is_key(<<"retries">>, Data) of
-        true -> Data;
-        false -> Data#{<<"retries">> =>0}
     end.
 
 
@@ -152,20 +150,7 @@ update(#{} = Db, Mrst0, State0) ->
     {Mrst2, State4} = fabric2_fdb:transactional(Db, fun(TxDb) ->
         % In the first iteration of update we need
         % to populate our db and view sequences
-        State1 = case State0 of
-            #{db_seq := undefined} ->
-                ViewSeq = couch_views_fdb:get_update_seq(TxDb, Mrst0),
-                State0#{
-                    tx_db := TxDb,
-                    db_seq := fabric2_db:get_update_seq(TxDb),
-                    view_seq := ViewSeq,
-                    last_seq := ViewSeq
-                };
-            _ ->
-                State0#{
-                    tx_db := TxDb
-                }
-        end,
+        State1 = get_update_start_state(TxDb, Mrst0, State0),
 
         {ok, State2} = fold_changes(State1),
 
@@ -173,7 +158,9 @@ update(#{} = Db, Mrst0, State0) ->
             count := Count,
             limit := Limit,
             doc_acc := DocAcc,
-            last_seq := LastSeq
+            last_seq := LastSeq,
+            view_vs := ViewVs,
+            build_to_vs := BuildToVS
         } = State2,
 
         DocAcc1 = fetch_docs(TxDb, DocAcc),
@@ -182,6 +169,10 @@ update(#{} = Db, Mrst0, State0) ->
 
         case Count < Limit of
             true ->
+                if BuildToVS == false -> ok; true ->
+                    couch_views_fdb:set_build_vs(TxDb, Mrst1, ViewVs, ?INDEX_READY)
+                end,
+                io:format("FINISHED ~n"),
                 report_progress(State2, finished),
                 {Mrst1, finished};
             false ->
@@ -203,6 +194,41 @@ update(#{} = Db, Mrst0, State0) ->
     end.
 
 
+get_update_start_state(TxDb, Mrst, #{db_seq := undefined} = State) ->
+    #{
+        job := Job,
+        job_data := Data,
+        build_to_vs := BuildToVS
+    } = State,
+
+    {ViewVS, BuildState} = couch_views_fdb:get_build_vs(TxDb, Mrst),
+
+    if BuildToVS == false -> ok; true ->
+        if BuildState == ?INDEX_BUILDING -> ok; true ->
+            couch_jobs:finish(undefined, Job, Data#{
+                error => index_built,
+                reason => <<"Index is already built">>
+            }),
+            exit(normal)
+        end
+    end,
+
+    ViewSeq = couch_views_fdb:get_update_seq(TxDb, Mrst),
+
+    State#{
+        tx_db := TxDb,
+        db_seq := fabric2_db:get_update_seq(TxDb),
+        view_vs := ViewVS,
+        view_seq := ViewSeq,
+        last_seq := ViewSeq
+    };
+
+get_update_start_state(TxDb, _Idx, State) ->
+    State#{
+        tx_db := TxDb
+    }.
+
+
 fold_changes(State) ->
     #{
         view_seq := SinceSeq,
@@ -219,7 +245,9 @@ process_changes(Change, Acc) ->
     #{
         doc_acc := DocAcc,
         count := Count,
-        design_opts := DesignOpts
+        design_opts := DesignOpts,
+        view_vs := ViewVs,
+        build_to_vs := BuildToVS
     } = Acc,
 
     #{
@@ -229,20 +257,26 @@ process_changes(Change, Acc) ->
 
     IncludeDesign = lists:keymember(<<"include_design">>, 1, DesignOpts),
 
-    Acc1 = case {Id, IncludeDesign} of
-        {<<?DESIGN_DOC_PREFIX, _/binary>>, false} ->
-            maps:merge(Acc, #{
-                count => Count + 1,
-                last_seq => LastSeq
-            });
-        _ ->
-            Acc#{
-                doc_acc := DocAcc ++ [Change],
-                count := Count + 1,
-                last_seq := LastSeq
-            }
-    end,
-    {ok, Acc1}.
+    DocVS = fabric2_fdb:next_vs(fabric2_fdb:seq_to_vs(LastSeq)),
+    case BuildToVS == true andalso ViewVs =< DocVS of
+        true ->
+            {stop, Acc};
+        false ->
+            Acc1 = case {Id, IncludeDesign} of
+                {<<?DESIGN_DOC_PREFIX, _/binary>>, false} ->
+                    maps:merge(Acc, #{
+                        count => Count + 1,
+                        last_seq => LastSeq
+                    });
+                _ ->
+                    Acc#{
+                        doc_acc := DocAcc ++ [Change],
+                        count := Count + 1,
+                        last_seq := LastSeq
+                    }
+            end,
+            {ok, Acc1}
+    end.
 
 
 map_docs(Mrst, Docs) ->
@@ -373,7 +407,8 @@ report_progress(State, UpdateType) ->
         tx_db := TxDb,
         job := Job1,
         job_data := JobData,
-        last_seq := LastSeq
+        last_seq := LastSeq,
+        build_to_vs := BuildToVS
     } = State,
 
     #{
@@ -390,7 +425,8 @@ report_progress(State, UpdateType) ->
         <<"ddoc_id">> => DDocId,
         <<"sig">> => Sig,
         <<"view_seq">> => LastSeq,
-        <<"retries">> => Retries
+        <<"retries">> => Retries,
+        <<"build_to_vs">> => BuildToVS
     },
 
     case UpdateType of

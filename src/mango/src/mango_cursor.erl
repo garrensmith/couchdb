@@ -19,6 +19,7 @@
     execute/3,
     maybe_filter_indexes_by_ddoc/2,
     remove_indexes_with_partial_filter_selector/1,
+    remove_unbuilt_indexes/1,
     maybe_add_warning/3
 ]).
 
@@ -27,6 +28,7 @@
 -include("mango.hrl").
 -include("mango_cursor.hrl").
 -include("mango_idx.hrl").
+-include_lib("couch_views/include/couch_views.hrl").
 
 
 -ifdef(HAVE_DREYFUS).
@@ -103,7 +105,7 @@ filter_indexes(Indexes, DesignId0) ->
         Else ->
             <<"_design/", Else/binary>>
     end,
-    FiltFun = fun(I) -> mango_idx:ddoc(I) == DesignId end,
+    FiltFun = fun(I) -> mango_idx:ddoc_id(I) == DesignId end,
     lists:filter(FiltFun, Indexes).
 
 
@@ -121,6 +123,12 @@ remove_indexes_with_partial_filter_selector(Indexes) ->
         end
     end,
     lists:filter(FiltFun, Indexes).
+
+
+remove_unbuilt_indexes(Indexes) ->
+    lists:filter(fun (Idx) ->
+        Idx#idx.build_status == ?INDEX_READY
+    end, Indexes).
 
 
 create_cursor(Db, Indexes, Selector, Opts) ->

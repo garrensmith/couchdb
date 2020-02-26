@@ -77,6 +77,7 @@ maybe_update_view(_Db, _Mrst, #mrargs{update = lazy}) ->
 maybe_update_view(TxDb, Mrst, _Args) ->
     DbSeq = fabric2_db:get_update_seq(TxDb),
     ViewSeq = couch_views_fdb:get_update_seq(TxDb, Mrst),
+    io:format("COMP Db ~p Vi ~p  EQ ~p ~n", [DbSeq, ViewSeq, DbSeq == ViewSeq]),
     case DbSeq == ViewSeq of
         true -> ok;
         false -> throw({build_view, DbSeq})

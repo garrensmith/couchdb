@@ -15,7 +15,9 @@
 -export([
     set_timeout/0,
     build_view/3,
-    build_view_async/2
+    build_view/4,
+    build_view_async/2,
+    build_view_async/3
 ]).
 
 -ifdef(TEST).
@@ -33,17 +35,24 @@ set_timeout() ->
 
 
 build_view(TxDb, Mrst, UpdateSeq) ->
-    {ok, JobId} = build_view_async(TxDb, Mrst),
+    build_view(TxDb, Mrst, UpdateSeq, false).
+
+build_view(TxDb, Mrst, UpdateSeq, BuildToVS) ->
+%%    io:format("bvui view ~p ~n", [UpdateSeq]),
+    {ok, JobId} = build_view_async(TxDb, Mrst, BuildToVS),
     case wait_for_job(JobId, UpdateSeq) of
         ok -> ok;
-        retry -> build_view(TxDb, Mrst, UpdateSeq)
+        retry -> build_view(TxDb, Mrst, UpdateSeq, BuildToVS)
     end.
 
 
 build_view_async(TxDb, Mrst) ->
+    build_view_async(TxDb, Mrst, false).
+
+build_view_async(TxDb, Mrst, BuildToVS) ->
     JobId = job_id(TxDb, Mrst),
-    JobData = job_data(TxDb, Mrst),
-    ok = couch_jobs:add(undefined, ?INDEX_JOB_TYPE, JobId, JobData),
+    JobData = job_data(TxDb, Mrst, BuildToVS),
+    ok = couch_jobs:add(TxDb, ?INDEX_JOB_TYPE, JobId, JobData),
     {ok, JobId}.
 
 
@@ -52,6 +61,7 @@ wait_for_job(JobId, UpdateSeq) ->
         {ok, Subscription, _State, _Data} ->
             wait_for_job(JobId, Subscription, UpdateSeq);
         {ok, finished, Data} ->
+%%            io:format("DD ~p ~n", [Data]),
             case Data of
                 #{<<"view_sig">> := ViewSeq} when ViewSeq >= UpdateSeq ->
                     ok;
@@ -87,7 +97,7 @@ job_id(DbName, Sig) ->
     <<DbName/binary, "-", HexSig/binary>>.
 
 
-job_data(Db, Mrst) ->
+job_data(Db, Mrst, BuildToVS) ->
     #mrst{
         idx_name = DDocId,
         sig = Sig
@@ -97,7 +107,8 @@ job_data(Db, Mrst) ->
         db_name => fabric2_db:name(Db),
         ddoc_id => DDocId,
         sig => fabric2_util:to_hex(Sig),
-        retries => 0
+        retries => 0,
+        build_to_vs => BuildToVS
     }.
 
 

@@ -15,9 +15,14 @@
 -define(VIEW_ID_INFO, 1).
 -define(VIEW_ID_RANGE, 2).
 -define(VIEW_MAP_RANGE, 3).
+-define(VIEW_BUILD_STATUS, 4).
 
 -define(VIEW_ROW_COUNT, 0).
 -define(VIEW_KV_SIZE, 1).
 
 % jobs api
 -define(INDEX_JOB_TYPE, <<"views">>).
+
+% indexing progress
+-define(INDEX_BUILDING, <<"building">>).
+-define(INDEX_READY, <<"ready">>).

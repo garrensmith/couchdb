@@ -32,10 +32,11 @@
     threshold = 1490
 }).
 
-handle_req(#httpd{} = Req, Db0) ->
+handle_req(#httpd{} = Req, Db) ->
     try
-        Db = set_user_ctx(Req, Db0),
-        handle_req_int(Req, Db)
+        fabric2_fdb:transactional(Db, fun (TxDb) ->
+            handle_req_int(Req, TxDb)
+        end)
     catch
         throw:{mango_error, Module, Reason} ->
             case mango_error:info(Module, Reason) of
@@ -87,9 +88,9 @@ handle_index_req(#httpd{method='POST', path_parts=[_, _]}=Req, Db) ->
     {ok, Idx0} = mango_idx:new(Db, Opts),
     {ok, Idx} = mango_idx:validate_new(Idx0, Db),
     DbOpts = [{user_ctx, Req#httpd.user_ctx}, deleted, ejson_body],
-    {ok, DDoc} = mango_util:load_ddoc(Db, mango_idx:ddoc(Idx), DbOpts),
-    Id = Idx#idx.ddoc,
-    Name = Idx#idx.name,
+    Id = mango_idx:ddoc_id(Idx),
+    Name = mango_idx:name(Idx),
+    {ok, DDoc} = mango_util:load_ddoc(Db, Id, DbOpts),
     Status = case mango_idx:add(DDoc, Idx) of
         {ok, DDoc} ->
             <<"exists">>;
@@ -107,7 +108,7 @@ handle_index_req(#httpd{method='POST', path_parts=[_, _]}=Req, Db) ->
                     ?MANGO_ERROR(error_saving_ddoc)
             end
     end,
-	chttpd:send_json(Req, {[{result, Status}, {id, Id}, {name, Name}]});
+    chttpd:send_json(Req, {[{result, Status}, {id, Id}, {name, Name}]});
 
 handle_index_req(#httpd{path_parts=[_, _]}=Req, _Db) ->
     chttpd:send_method_not_allowed(Req, "GET,POST");
@@ -124,7 +125,7 @@ handle_index_req(#httpd{method='POST', path_parts=[_, <<"_index">>,
     DelOpts = get_idx_w_opts(Opts),
     {Success, Fail} = lists:foldl(fun(DDocId0, {Success0, Fail0}) ->
         DDocId = convert_to_design_id(DDocId0),
-        Filt = fun(Idx) -> mango_idx:ddoc(Idx) == DDocId end,
+        Filt = fun(Idx) -> mango_idx:ddoc_id(Idx) == DDocId end,
         Id = {<<"id">>, DDocId},
         case mango_idx:delete(Filt, Db, Idxs, DelOpts) of
             {ok, true} ->
@@ -150,7 +151,7 @@ handle_index_req(#httpd{method='DELETE',
     DDocId = convert_to_design_id(DDocId0),
     DelOpts = get_idx_del_opts(Req),
     Filt = fun(Idx) ->
-        IsDDoc = mango_idx:ddoc(Idx) == DDocId,
+        IsDDoc = mango_idx:ddoc_id(Idx) == DDocId,
         IsType = mango_idx:type(Idx) == Type,
         IsName = mango_idx:name(Idx) == Name,
         IsDDoc andalso IsType andalso IsName
@@ -196,11 +197,6 @@ handle_find_req(#httpd{method='POST'}=Req, Db) ->
 
 handle_find_req(Req, _Db) ->
     chttpd:send_method_not_allowed(Req, "POST").
-
-
-set_user_ctx(#httpd{user_ctx=Ctx}, Db) ->
-    {ok, NewDb} = couch_db:set_user_ctx(Db, Ctx),
-    NewDb.
 
 
 get_idx_w_opts(Opts) ->

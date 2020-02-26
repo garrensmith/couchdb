@@ -64,6 +64,8 @@
     seq_to_vs/1,
     next_vs/1,
 
+    new_versionstamp/1,
+
     debug_cluster/0,
     debug_cluster/2
 ]).
@@ -647,8 +649,12 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
         atts = Atts
     } = Doc,
 
-    % Doc body
+    % Fetch the old doc body for the mango hooks
+    OldWinnerDoc = if OldWinner == not_found -> not_found; true ->
+        get_doc_body(Db, DocId, OldWinner)
+    end,
 
+    % Doc body
     ok = write_doc_body(Db, Doc),
 
     % Attachment bookkeeping
@@ -781,6 +787,9 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
         updated ->
             ok
     end,
+    Doc1 = maybe_add_conflicts_revs(UpdateStatus, Doc, NewWinner,
+        OldWinnerDoc, ToUpdate),
+    apply_after_doc_write(Db, Doc1, OldWinnerDoc, UpdateStatus),
 
     % Update database size
     AddSize = sum_add_rev_sizes([NewWinner | ToUpdate]),
@@ -788,6 +797,40 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
     incr_stat(Db, <<"sizes">>, <<"external">>, AddSize - RemSize),
 
     ok.
+
+
+maybe_add_conflicts_revs(updated, Doc, NewWinner, OldWinnerDoc, ToUpdate) ->
+    % Get winning doc with conflicts field
+    DocRev = extract_rev(Doc#doc.revs),
+    {WinnerRevPos, _} = WinnerRevId = maps:get(rev_id, NewWinner),
+    WinnerDoc = case WinnerRevId == DocRev of
+        true -> Doc;
+        false -> OldWinnerDoc
+    end,
+
+    RevConflicts = lists:foldl(fun (UpdateRev, Acc) ->
+        {RevPos, _} = maps:get(rev_id, UpdateRev),
+        case RevPos == WinnerRevPos of
+            true ->
+                Acc ++ [UpdateRev#{winner := false}];
+            false ->
+                Acc
+        end
+    end, [], ToUpdate),
+
+    {ok, WinnerDoc1} = fabric2_db:apply_open_doc_opts(WinnerDoc, RevConflicts, [conflicts]),
+    WinnerDoc1;
+
+maybe_add_conflicts_revs(_UpdateStatus, Doc, _NewWinner, _OldWinnerDoc, _ToUpdate) ->
+    Doc.
+
+
+extract_rev({RevPos, [Rev | _]}) ->
+    {RevPos, Rev}.
+
+
+apply_after_doc_write(Db, Winner, OldWinner, UpdateStatus) ->
+    fabric2_db_plugin:after_doc_write(Db, Winner, OldWinner, UpdateStatus).
 
 
 write_local_doc(#{} = Db0, Doc) ->
@@ -966,6 +1009,11 @@ next_vs({versionstamp, VS, Batch, TxId}) ->
             end
     end,
     {versionstamp, V, B, T}.
+
+
+new_versionstamp(Tx) ->
+    TxId = erlfdb:get_next_tx_id(Tx),
+    {versionstamp, 16#FFFFFFFFFFFFFFFF, 16#FFFF, TxId}.
 
 
 debug_cluster() ->
@@ -1702,11 +1750,6 @@ get_transaction_id(Tx, LayerPrefix) ->
         TxId when is_binary(TxId) ->
             TxId
     end.
-
-
-new_versionstamp(Tx) ->
-    TxId = erlfdb:get_next_tx_id(Tx),
-    {versionstamp, 16#FFFFFFFFFFFFFFFF, 16#FFFF, TxId}.
 
 
 on_commit(Tx, Fun) when is_function(Fun, 0) ->

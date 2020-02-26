@@ -27,7 +27,9 @@
 
 
 -include_lib("couch/include/couch_db.hrl").
+-include("mango.hrl").
 -include("mango_idx.hrl").
+-include_lib("couch_views/include/couch_views.hrl").
 
 
 validate(_) ->
@@ -55,7 +57,8 @@ to_json(#idx{def=all_docs}) ->
             {<<"fields">>, [{[
                 {<<"_id">>, <<"asc">>}
             ]}]}
-        ]}}
+        ]}},
+        {build_status, ?INDEX_READY}
     ]}.
 
 

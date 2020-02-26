@@ -29,7 +29,8 @@ app() ->
 
 providers() ->
     [
-         {chttpd_handlers, mango_httpd_handlers}
+         {chttpd_handlers, mango_httpd_handlers},
+         {fabric2_db, mango_fabric2_plugin}
     ].
 
 services() ->
